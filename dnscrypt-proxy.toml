@@ -1,0 +1,25 @@
+## dnscrypt-proxy configuration file
+
+server_names = ['cloudflare', 'cisco', 'google']
+
+listen_addresses = ['[::]:53']
+
+ipv4_servers = true
+ipv6_servers = false
+
+dnscrypt_servers = false
+doh_servers = true
+
+cache = true
+max_clients = 2500
+
+## Upstream DoH servers
+[static]
+  [static.cloudflare]
+  stamp = 'sdns://AgcAAAAAAAAADDE2Mi4xNTkuNDYuMQAMMTYyLjE1OS40Ni4xCi9kbnMtcXVlcnk'
+  
+  [static.cisco]
+  stamp = 'sdns://AgAAAAAAAAAADDE0Ni4xMTIuNDEuMiCYZO337qhZZ1J0sPrfvSaTZamrnrp3PahnSUxalKQ33w9kb2gub3BlbmRucy5jb20KL2Rucy1xdWVyeQ'
+
+  [static.google]
+  stamp = 'sdns://AgUAAAAAAAAABzguOC44LjggsKKKE4EwvtIbNjGjagI2607EdKSVHowYZtyvD9iPrkkHOC44LjguOAovZG5zLXF1ZXJ5'
