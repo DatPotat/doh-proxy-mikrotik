@@ -1,6 +1,9 @@
 # doh-proxy-mikrotik
 DoH proxy for Mikrotik. The original DoH implementation is not stable for me, so I'll keep the container implementation.
 
+The sdns of the required DoH servers can be found at::<br>
+- https://dnscrypt.info/public-servers/
+
 Install builders for the required architecture (arm or arm64):<br>
 `docker run --privileged --rm tonistiigi/binfmt --install all`
 
