@@ -1,39 +1,191 @@
-# doh-proxy-mikrotik
-DoH proxy for Mikrotik. The original DoH implementation is not stable for me, so I'll keep the container implementation.
+# dns-doh - DoH3-прокси для MikroTik
 
-The sdns of the required DoH servers can be found at::<br>
-- https://dnscrypt.info/public-servers/
+Контейнер для роутера MikroTik: принимает обычные DNS-запросы на порту 53 и
+отправляет их наружу в шифрованном виде по **DoH3** (DNS-over-HTTP/3) с откатом
+на DoH2. Нужен потому, что встроенный DoH в RouterOS ограничен: один сервер, без
+HTTP/3, без балансировки.
 
-Install builders for the required architecture (arm or arm64):<br>
-`docker run --privileged --rm tonistiigi/binfmt --install all`
+## Что он делает
 
-Build for arm:<br>
-`docker buildx build --no-cache --platform linux/arm/v6 -t dns .`
+- Шифрует DNS-запросы: провайдер и посторонние в сети не видят, какие сайты ты открываешь.
+- Работает по **DoH3 (HTTP/3 поверх QUIC)** — быстрее и устойчивее к потерям пакетов, чем обычный DoH по TCP. Если HTTP/3 недоступен, автоматически падает на DoH2.
+- Держит **несколько DoH-операторов сразу** и балансирует между двумя самыми быстрыми — если один тормозит или лежит, запросы идут к другим.
+- Кэширует ответы — повторные запросы отвечаются мгновенно, без обращения наружу.
 
-Build for arm64:<br>
-`docker buildx build --no-cache --platform linux/arm64/v8 -t dns .`
+Список операторов и все настройки — в файле `dnscrypt-proxy.toml`. Это
+единственное место, где что-то меняется; контейнер сам ничего не хардкодит.
+Чтобы добавить или убрать оператора — правишь этот файл, а не образ.
 
-Pack the container into an archive:<br>
-`docker save dns -o dns.tar`
+## Что понадобится
 
-Copy the .tar to the Mikrotik
+- MikroTik с поддержкой контейнеров (arm, arm64 или x86) и установленным пакетом `container`.
+- Внешний диск (USB-флешка или SSD). **Контейнеры нежелательно держать на встроенной памяти роутера из-за быстрого износа nand-памяти** - только на внешнем диске, отформатированном в **ext4**.
+- Компьютер с установленным Docker (для сборки образа).
 
-Create an interface for the container:<br>
-`/interface/veth/add address=192.168.1.2/24 gateway=192.168.1.1 name=veth-doh comment="DoH container"`
+## Сборка образа
 
-Unzip the container and save it to a USB drive:<br>
-`/container/add file=dns.tar interface=veth-doh root-dir=usb1/Containers/doh-mikrotik workdir=/root start-on-boot=yes logging=yes comment="DoH container"`
+Образ собирается под архитектуру роутера. RB5009, hAP ax и другие на
+ARM64 - это `linux/arm64`. Старые ARM-устройства - `linux/arm`. x86 - `linux/amd64`.
 
-Creating a bridge:<br>
-`/interface/bridge/add name=container-doh`
+Поместить `Dockerfile` и `dnscrypt-proxy.toml` в одну папку и из неё выполнить (пример
+для ARM64 - подставить свою платформу):
 
-Create a network for the created bridge:<br>
-`/ip/address/add address=192.168.1.1/24 network=192.168.1.0 interface=container-doh comment="DoH container"`
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --provenance=false --sbom=false \
+  -t dns-doh:local \
+  --output type=oci,dest=dns-doh-local.tar \
+  .
+```
 
-Add the container interface to the created bridge:<br>
-`/interface/bridge/port add bridge=container-doh interface=veth-doh`
+Флаги `--provenance=false --sbom=false` обязательны - без них RouterOS не сможет
+импортировать образ (падает с ошибкой про манифест). На выходе - файл
+`dns-doh-local.tar`, его и заливаем на роутер.
 
-Making a masquerade for the created network:<br>
-`/ip/firewall/nat add chain=srcnat src-address=192.168.1.0/24 out-interface={{you-WAN}} action=masquerade comment="DoH container"`
+| Устройство | `--platform` |
+|---|---|
+| RB5009, hAP ax², большинство новых | `linux/arm64` |
+| Старые ARM (hEX, hAP ac²) | `linux/arm` |
+| x86 / CHR | `linux/amd64` |
 
-In IP -> DNS you can delete all previously added DNS and DoH servers and specify the address of the created container: `192.168.1.2`
+## Установка на роутер
+
+Ниже - минимальный путь. Команды выполняются в терминале RouterOS (WinBox →
+New Terminal, или SSH). Пути и имена (диск, veth) подставь свои - как их узнать,
+написано по ходу.
+
+**0. Убедись, что режим контейнеров включён.**
+
+```
+/system/device-mode/print
+```
+
+В строке `container` должно быть `yes`. Если `no` — включение требует физического
+доступа к роутеру (нажатие кнопки reset или холодная перезагрузка):
+`/system/device-mode/update container=yes` и дальше по подсказке команды.
+
+**1. Подготовь флешку (ext4).** Найди её слот:
+
+```
+/disk/print
+```
+
+Запомни имя слота (обычно `usb1`). Отформатируй в ext4 (**сотрёт всё на флешке**):
+
+```
+/disk/format usb1 file-system=ext4 label=cnt mbr-partition-table=yes
+```
+
+После форматирования посмотри, как назвался раздел - он и есть рабочий путь:
+
+```
+/file/print
+```
+
+С таблицей разделов раздел обычно называется `usb1-part1`. Дальше в командах
+используется он — подставь своё имя, если отличается.
+
+**2. Создай папки на флешке** - под конфиг и под временную распаковку
+(папку для самого контейнера создавать **не нужно**, RouterOS сделает её сам):
+
+```
+/file/add name=usb1-part1/config type=directory
+/file/add name=usb1-part1/tmp type=directory
+```
+
+**3. Залей файлы.** Через WinBox (меню Files, перетащить мышкой):
+
+- `dns-doh-local.tar` - в корень роутера.
+- `dnscrypt-proxy.toml` - в папку `usb1-part1/config`.
+
+Уведи распаковку контейнеров на флешку (чтобы не изнашивать встроенную память):
+
+```
+/container/config/set tmpdir=usb1-part1/tmp
+```
+
+**4. Настрой сеть контейнера** — виртуальный интерфейс `veth` с адресом.
+Если у тебя уже есть настроенный veth (проверь `/interface/veth/print`) -
+пропусти этот шаг и используй его имя. Если нет:
+
+```
+/interface/veth/add name=veth-doh address=192.168.1.2/24 gateway=192.168.1.1
+/interface/bridge/add name=doh-bridge
+/ip/address/add address=192.168.1.1/24 interface=doh-bridge
+/interface/bridge/port/add bridge=doh-bridge interface=veth-doh
+/ip/firewall/nat/add chain=srcnat action=masquerade src-address=192.168.1.0/24
+```
+
+Адрес `192.168.1.2` - это адрес, по которому контейнер будет отвечать на DNS.
+Можешь взять другой, лишь бы он не пересекался с твоей основной сетью.
+
+**5. Опиши, куда монтировать конфиг** - «mount list» связывает папку на флешке
+с папкой `/config` внутри контейнера:
+
+```
+/container/mounts/add list=dns-config src=usb1-part1/config dst=/config
+```
+
+**6. Импортируй контейнер:**
+
+```
+/container/add file=dns-doh-local.tar interface=veth-doh root-dir=usb1-part1/dns-doh mountlists=dns-config logging=yes start-on-boot=yes
+```
+
+- `file=` - имя tar в корне роутера.
+- `interface=` - имя твоего veth из шага 4.
+- `mountlists=` - имя из шага 5 (`dns-config`).
+- `root-dir=` - папка на флешке, куда распакуется контейнер (RouterOS создаст её сам).
+
+Контейнер распакуется, но **сам не запустится**. Дождись `status=stopped`:
+
+```
+/container/print
+```
+
+**7. Запусти и проверь лог:**
+
+```
+/container/start 0
+/log/print where topics~"container"
+```
+
+В логе должно появиться, что поднялись все операторы из конфига и строка
+`dnscrypt-proxy is ready - live servers: N`. Пока этого нет — дальше не иди.
+
+**8. Переключи роутер на свой DNS:**
+
+```
+/ip/dns/set servers=192.168.1.2
+/ip/dns/cache/flush
+/resolve example.com
+```
+
+Если `/resolve` вернул адрес - готово. Роутер и вся сеть за ним резолвят через
+шифрованный DoH3.
+
+## Если что-то пошло не так
+
+Верни роутеру обычные DNS-серверы - сеть продолжит работать, пока разбираешься
+с контейнером:
+
+```
+/ip/dns/set servers=1.1.1.1,9.9.9.9
+/ip/dns/cache/flush
+```
+
+Смотреть, что происходит в контейнере: `/log/print where topics~"container"`.
+Перезапустить: `/container/stop 0` затем `/container/start 0`.
+
+## Правка конфига
+
+Меняешь `dnscrypt-proxy.toml` (добавить/убрать оператора, поправить кэш),
+заливаешь новый файл в `usb1-part1/config`, затем перезапускаешь контейнер:
+
+```
+/container/stop 0
+/container/start 0
+```
+
+Пересобирать образ для этого не нужно - конфиг лежит на флешке отдельно от образа.

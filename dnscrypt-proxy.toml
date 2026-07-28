@@ -1,25 +1,50 @@
-## dnscrypt-proxy configuration file
-
-server_names = ['cloudflare', 'cisco', 'google']
-
 listen_addresses = ['[::]:53']
+max_clients = 250
+
+server_names = ['cloudflare', 'google', 'quad9', 'nextdns']
 
 ipv4_servers = true
 ipv6_servers = false
-
 dnscrypt_servers = false
 doh_servers = true
 
-cache = true
-max_clients = 2500
+http3 = true
+http3_probe = true
 
-## Upstream DoH servers
+lb_strategy = 'p2'
+lb_estimator = true
+
+cache = true
+cache_size = 4096
+cache_min_ttl = 2400
+cache_max_ttl = 86400
+cache_neg_min_ttl = 60
+cache_neg_max_ttl = 600
+
+bootstrap_resolvers = ['9.9.9.9:53', '8.8.8.8:53']
+ignore_system_dns = true
+netprobe_timeout = 60
+netprobe_address = '9.9.9.9:53'
+
+block_unqualified = true
+block_undelegated = true
+reject_ttl = 10
+
 [static]
+
   [static.cloudflare]
-  stamp = 'sdns://AgcAAAAAAAAABzEuMC4wLjEABzEuMC4wLjEKL2Rucy1xdWVyeQ'
-  
-  [static.cisco]
-  stamp = 'sdns://AgAAAAAAAAAADDE0Ni4xMTIuNDEuMiCYZO337qhZZ1J0sPrfvSaTZamrnrp3PahnSUxalKQ33w9kb2gub3BlbmRucy5jb20KL2Rucy1xdWVyeQ'
+  # 1.1.1.1 — nolog, nofilter
+  stamp = 'sdns://AgcAAAAAAAAABzEuMS4xLjEAEmNsb3VkZmxhcmUtZG5zLmNvbQovZG5zLXF1ZXJ5'
 
   [static.google]
-  stamp = 'sdns://AgUAAAAAAAAABzguOC44LjggsKKKE4EwvtIbNjGjagI2607EdKSVHowYZtyvD9iPrkkHOC44LjguOAovZG5zLXF1ZXJ5'
+  # 8.8.8.8 — logs (operational), nofilter
+  stamp = 'sdns://AgUAAAAAAAAABzguOC44LjgACmRucy5nb29nbGUKL2Rucy1xdWVyeQ'
+
+  [static.quad9]
+  # 9.9.9.9 — nolog, malware filtering + DNSSEC
+  stamp = 'sdns://AgMAAAAAAAAABzkuOS45LjkADWRucy5xdWFkOS5uZXQKL2Rucy1xdWVyeQ'
+
+  [static.nextdns]
+  # dns.nextdns.io — no hard-coded IP: bootstrap resolves to the nearest
+  # ultralow PoP (geo-steered, usually faster than the anycast IP)
+  stamp = 'sdns://AgcAAAAAAAAAAAAOZG5zLm5leHRkbnMuaW8KL2Rucy1xdWVyeQ'
